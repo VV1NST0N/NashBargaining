@@ -1,0 +1,283 @@
+import bargainging.solution.JavaUtils
+import io.sarl.core.DefaultContextInteractions
+import io.sarl.core.Initialize
+import io.sarl.core.Lifecycle
+import io.sarl.core.Logging
+import io.sarl.core.OpenEventSpaceSpecification
+import io.sarl.core.Schedules
+import java.io.File
+import java.io.FileWriter
+import java.io.Writer
+import java.util.LinkedHashMap
+import java.util.List
+import java.util.UUID
+import java.util.concurrent.ThreadLocalRandom
+
+agent Spectator {
+
+	uses Lifecycle, Schedules, DefaultContextInteractions, Logging
+
+	/************** 
+	 * Game Setup
+	 * *************
+	 */
+	var gameConfig : LinkedHashMap<String, Object>
+	var itemValues : LinkedHashMap<UUID, LinkedHashMap<String, Double>> = newLinkedHashMap()
+	var buyers : List<UUID> = newArrayList
+	var traders : List<UUID> = newArrayList
+	var actors : LinkedHashMap<UUID, ActorPersonality> = newLinkedHashMap
+	var randomVals : boolean = true
+	var min : Double = 0.0
+	var max : Double = 40.0
+	var lockObj = new Object
+
+	/************** 
+	 * Result Setup
+	 * ************
+	 */
+	var results : LinkedHashMap<Integer, LinkedHashMap<String, Object>> = newLinkedHashMap
+	var round : int = 1
+	var file = new File("D:\\sample.csv")
+	var writer : Writer = new FileWriter(file, true)
+
+	// Tournament list:
+	var gamePairs : LinkedHashMap<Integer, LinkedHashMap<String, LinkedHashMap<UUID, String>>> = newLinkedHashMap
+
+	on Initialize {
+		loggingName = "Spectator"
+		var util = new JavaUtils()
+		gameConfig = util.loadGameConfig()
+		info(gameConfig.keySet().size())
+		buildGameSetupFromConfig
+		bargaining()
+	}
+
+	on TurnEnd {
+		info("Turn End")
+		for (gameRound : occurrence.results.keySet()) {
+			var roundMap = occurrence.results.get(gameRound) as LinkedHashMap
+			var itemsTrader = roundMap.get("itemsTrader") as List
+			var itemsBuyer = roundMap.get("itemsBuyer") as List
+			results.put(round, roundMap)
+			round++
+			var trader = rebalanceItems(roundMap.get("TraderActor") as ActorPersonality, itemsBuyer, itemsTrader)
+			var buyer = rebalanceItems(roundMap.get("BuyerActor") as ActorPersonality, itemsTrader, itemsBuyer)
+			in(1000) [
+				calculateChangedUtils(trader, buyer)
+			]
+		}
+
+	}
+
+	def bargaining() {
+		var waitTask = task("wait-task")
+
+		var gameResults : LinkedHashMap<Integer, LinkedHashMap<String, Double>> = newLinkedHashMap()
+		var spaceId = UUID::randomUUID
+		var ^newSpace = defaultContext.createSpace(typeof(OpenEventSpaceSpecification), spaceId as UUID)
+		info(actors.keySet())
+		info("build pairs")
+		buildPairs
+		
+		in(100) [
+			Utils.setItemsVals(itemValues)
+			for (actor : actors.keySet()) {
+				var actorPerson = actors.get(actor)
+				(actorPerson.getRole() == "Trader") ? spawn(typeof(Trader), spaceId, actor, actorPerson) : spawn(
+					typeof(Buyer), spaceId, actor, actorPerson)
+			}
+			spawn(typeof(Controller), spaceId, "Controller", 1)
+		]
+
+		in(2000) [
+			info("Calculating Utilities")
+			calculateAllUtils
+		]
+	}
+	
+	/******************
+	 * First computation 
+	 ******************/
+	def calculateAllUtils() {
+		synchronized (lockObj) {
+			info("Game Pairs: " + gamePairs.keySet().size())
+			for (trader : traders) {
+				buyers.forEach([
+					Utils.calcUtils(trader, actors.get(trader).getItems(), it, actors.get(it).getItems())
+				])
+			}
+			for (actor : actors.keySet()) {
+				emit(new TransportGoods(newLinkedHashMap("id" -> actor, "items" -> actors.get(actor).getItems(),
+					"utils" -> Utils.getUtilsForActor(actor))))
+			}
+			info("start game")
+			emit(
+				new StartGame(gamePairs.get(round).get("Trader"), "Controller", gamePairs.get(round).get("Buyer"),
+					actors))
+		}
+	}
+
+	def calculateChangedUtils(trader : ActorPersonality, buyer : ActorPersonality) {
+		info("Calculating new Utils")
+		synchronized (lockObj) {
+			Utils.clean()
+			actors.put(trader.getTradingId(), trader)
+			actors.put(buyer.getTradingId(), buyer)
+
+			for (traderPerson : traders) {
+				buyers.forEach([
+					Utils.calcUtils(traderPerson, actors.get(traderPerson).getItems(), it, actors.get(it).getItems())
+				])
+			}
+			for (actor : actors.keySet()) {
+				emit(new TransportGoods(newLinkedHashMap("id" -> actor, "items" -> actors.get(actor).getItems(),
+					"utils" -> Utils.getUtilsForActor(actor))))
+			}
+
+			info("finished calculating Utilities")
+			in(2000) [
+				if (round <= gamePairs.keySet().size()) {
+					info("\n\nRound: " + round)
+					emit(
+						new StartGame(gamePairs.get(round).get("Trader"), "Controller",
+							gamePairs.get(round).get("Buyer")))
+				} else {
+					in(200) [
+						info("dying")
+						emit(new Die)
+						csvWrite()
+						in(800) [
+							killMe
+						]
+					]
+				}
+			]
+		}
+	}
+
+	def rebalanceItems(actor : ActorPersonality, itemsRemove : List<String>, itemsAdd : List<String>) {
+		synchronized (lockObj) {
+			var actorItems : List<String> = actor.getItems()
+			info(actor.getName() + " items before Trade: " + actorItems)
+			for (remove : itemsRemove) {
+				actorItems.removeIf([it == remove])
+			}
+			if (itemsAdd !== null) {
+				actorItems.addAll(itemsAdd)
+			}
+			info(actor.getName() + " items after Trade: " + actorItems)
+			return actor
+		}
+
+	}
+
+	/*************************** 
+	 * Configuration before game start
+	 * **********************
+	 */
+	var num : Integer = 1
+
+	def buildPairs() {
+
+		traders.forEach([
+			var trader = it
+			buyers.forEach([
+				var buyer = it
+				var traderPerson = actors.get(trader) as ActorPersonality
+				var buyerPerson = actors.get(buyer) as ActorPersonality
+				gamePairs.put(num, newLinkedHashMap("Buyer" -> newLinkedHashMap(buyer -> buyerPerson.getName()),
+					"Trader" -> newLinkedHashMap(trader -> traderPerson.getName())))
+				num = num + 1
+			])
+
+		])
+	}
+
+	def buildGameSetupFromConfig() {
+		for (conf : gameConfig.keySet) {
+
+			var confObj = gameConfig.get(conf) as LinkedHashMap<String, Object>
+			var itemValsMap : LinkedHashMap<String, Double> = confObj.get(
+				"playerItemsValueMap") as LinkedHashMap<String, Double>
+			var items : List<String> = confObj.get("itemList") as List<String>
+			var name : String = confObj.get("name") as String
+			var idString : String = confObj.get("traderId") as String
+			var id : UUID = UUID.fromString(idString)
+			var role : String = confObj.get("role") as String
+			var money : Double = confObj.get("money") as Double
+			var tolerance : Double = confObj.get("tolerance") as Double
+			var trustScore : Double = confObj.get("trustScore") as Double
+			var actorType : String = confObj.get("actor") as String
+			var shift : Double = confObj.get("itemsValShift") as Double
+			var ownShift : Double = confObj.get("ownItemsValShift") as Double
+			if (randomVals) {
+				itemValsMap = changeItemVals(itemValsMap, items, 0.0, 0.0)
+			} 
+			var actor : ActorPersonality = getActorPersonality(actorType, id, name, items, money, trustScore, tolerance,
+				role)
+			(role == "Trader") ? traders.add(id) : buyers.add(id)
+			actors.put(id, actor)
+			itemValues.put(id, itemValsMap)
+
+		}
+	}
+
+	def changeItemVals(itemVals : LinkedHashMap<String, Double>, items : List<String>, shift : Double,
+		ownShift : Double) {
+		for (item : itemVals.keySet()) {
+			var itemVal = itemVals.get(item)
+			var randomValueShift : Double = ThreadLocalRandom.current().nextDouble(min, max)
+			(items.contains(item))
+				? itemVals.put(item, itemVal - randomValueShift + ownShift) 
+				: itemVals.put(item, itemVal + randomValueShift + shift)
+		}
+		return itemVals
+	}
+
+	def getActorPersonality(actor : String, id : UUID, name : String, items : List<String>, money : Double,
+		trustScore : Double, baseTolerance : Double, role : String) {
+		switch actor {
+			case 'Coop': return new CoopActor(id, name, items, money, trustScore, baseTolerance, role)
+			case 'TitForTat': return new TitForTatActor(id, name, items, money, trustScore, baseTolerance, role)
+			case 'Random': return new RandomActor(id, name, items, money, trustScore, baseTolerance, role)
+			case 'Deflecting': return new DeflectingActor(id, name, items, money, trustScore, baseTolerance, role)
+		}
+	}
+
+	/*************************** 
+	 * After game ends
+	 * **********************
+	 */
+	def csvWrite() {
+		var tempList : List<LinkedHashMap<String, Object>> = newArrayList
+		var list : List<LinkedHashMap<String, String>> = newArrayList
+		results.keySet().forEach([
+			tempList.add(results.get(it))
+		])
+		var round = 1
+		for (listEntry : tempList) {
+				
+			listEntry.put("itemsBuyer", listEntry.get("itemsBuyer"))
+			listEntry.put("itemsTrader", listEntry.get("itemsTrader"))
+			listEntry.remove("TraderActor")
+			listEntry.remove("BuyerActor")
+			listEntry.remove("offer")
+			var confObj = gameConfig.get(listEntry.get("traderId") as String) as LinkedHashMap
+			list.add(newLinkedHashMap(
+				"traderId" -> listEntry.get("traderId") as String,
+				"traderName" -> listEntry.get("traderName") as String,
+				"utilTrader" -> listEntry.get("utilTrader") as String,
+				"buyerId" -> listEntry.get("buyerId") as String,
+				"buyerName" -> listEntry.get("buyerName") as String,
+				"buyerUtil" -> listEntry.get("buyerUtil") as String,
+				"itemsTrader" -> listEntry.get("itemsTrader") as String,
+				"itemsBuyer" -> listEntry.get("itemsBuyer") as String,
+				"actorType" -> confObj.get("actor") as String,
+				"round" -> round as String
+			))
+			round++
+		}
+
+		JavaUtils.csvWriter(list, writer)
+	}
+}

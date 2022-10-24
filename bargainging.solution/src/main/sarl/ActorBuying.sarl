@@ -1,0 +1,147 @@
+import io.sarl.core.Behaviors
+import io.sarl.core.DefaultContextInteractions
+import io.sarl.core.ExternalContextAccess
+import io.sarl.core.Initialize
+import io.sarl.core.Lifecycle
+import io.sarl.core.Logging
+import io.sarl.core.Schedules
+import java.util.ArrayList
+import java.util.LinkedHashMap
+import java.util.List
+import java.util.TreeMap
+import java.util.UUID
+
+agent Buyer extends BaseActor {
+
+	uses Lifecycle, Schedules, DefaultContextInteractions, Behaviors, Logging, ExternalContextAccess
+
+	var numBargainRounds = 0
+
+	var sortedUtilsByBuyer : LinkedHashMap<UUID, TreeMap<UUID, Double>> = newLinkedHashMap()
+
+	on Initialize {
+		// Event trigger before the agent begin to live or to be used.
+		// You should put all the initialization statements in this block of code.
+		synchronized (this) {
+			^space = defaultContext.getSpace(occurrence.parameters.get(0) as UUID)
+			^space.register(asEventListener())
+			this.tradingId = occurrence.parameters.get(1) as UUID
+			this.me = occurrence.parameters.get(2) as ActorPersonality
+			this.toleranceToReachMaxOwnUtil = me.getBaseTolerance()
+			this.toleranceToReachMaxGenUtil = me.getBaseTolerance()
+			loggingName = me.getName()
+			info("The Actor " + me.getName() + " was started.")
+		}
+	}
+
+	on MakeOffer [!isFromMe] {
+		var offer = occurrence.offer
+		if (me.getRole() == "Buyer") {
+			if (offer.getClientId() == this.tradingId) {
+				if (offer.getClientName() == null) {
+					offer.setClientName(me.getName())
+					offer.setBuyerTrustScore(me.getTrustScore())
+				}
+				checkOffer(offer)
+			}
+		}
+
+	}
+
+	on Clean {
+
+		sortedUtilsByBuyer = newLinkedHashMap
+		numBargainRounds = 0
+		resetTolerances()
+	}
+
+	on Die {
+		info("Stopping")
+		killMe
+	}
+
+	def checkOffer(offer : Offer) {
+		if (offer !== null && offer.getTraderItems() !== null) {
+			var util : LinkedHashMap<String, Double> = Utils.calcUtilForOffer(offer)
+			// info(util)
+			// Calculate the Square root from the gen Util/ Nash product to get near to the optimal nash solution
+			var minAccept = Math.sqrt(util.get("genUtil"))
+			minAccept = minAccept * toleranceToReachMaxOwnUtil
+			//info("Minimum Util: " + minAccept + " My Util: " + util.get("utilTrader") + " Max util: " + Utils.getMaxUtil(offer))
+			if (util.get("utilTrader") >= minAccept &&
+				util.get("genUtil") >= (Utils.getMaxUtil(offer) * toleranceToReachMaxGenUtil)) {
+				info("Accept Offer: " + offer)
+				^space.emit(new AcceptOffer(offer))
+			} else {
+				evaluateCounterOffer(offer)
+			}
+		} else {
+			evaluateCounterOffer(offer)
+		}
+	}
+	
+	on Notify [occurrence.resultMap.get("Buyer").get("id") == this.tradingId] {
+		var id = occurrence.resultMap.get("Trader").get("id") as UUID
+		var result = occurrence.resultMap.get("Trader").get("result") as Boolean
+		me.setPlayerBeavhiour(id, result)
+	}
+
+	on TransportGoods [occurrence.resultMap.get("id") == this.tradingId] {
+		var items = occurrence.resultMap.get("items") as List
+		var utils = occurrence.resultMap.get("utils") as LinkedHashMap
+		me.setItems(items)
+		me.setMyUtils(utils)
+	}
+
+	on InitPlay [occurrence.offer.getClientId() == this.tradingId] {
+		^space.emit(new Play(occurrence.offer, me, me.playStrat(occurrence.offer.getTraderId()), me.getRole()))
+	}
+
+	def evaluateCounterOffer(oldOffer : Offer) {
+		synchronized (lockObj) {
+			var amount = 0.0
+			var items : List<String> = null
+			var trader = oldOffer.getTraderId()
+			if (numBargainRounds >= 7 || oldOffer.getTraderTrustScore() < 45.0) {
+				info(oldOffer.getNumBargainRounds())
+				info("Reject!")
+				^space.emit(new Reject(oldOffer))
+			} else {
+				if (sortedUtilsByBuyer.get(trader) === null) {
+					sortedUtilsByBuyer.put(trader, Utils.getSortedUtilsForOpponent(me.getUtilsByBuyer(trader)))
+					if (sortedUtilsByBuyer.size() <= 0) {
+						^space.emit(new Reject(oldOffer))
+					}
+					var highestPersonalUtil : LinkedHashMap<String, Object> = me.getUtilByActorIdAndUtilId(trader,
+						sortedUtilsByBuyer.get(trader).lastKey())
+					var tradeItems : List<String> = highestPersonalUtil.get("tradeItems") as ArrayList
+					var offerItems : List<String> = highestPersonalUtil.get("offerItems") as ArrayList
+					var myOffer : Offer = buildNewOffer(oldOffer, tradeItems, offerItems, 0.0)
+					^space.emit(new MakeOffer(myOffer))
+				} else {
+					if (sortedUtilsByBuyer.get(trader).size() > 0) {
+						sortedUtilsByBuyer.get(trader).remove(sortedUtilsByBuyer.get(trader).lastKey())
+					}
+					if (sortedUtilsByBuyer.get(trader).size() == 0) {
+						lowerTolerances(me.getToleranceChangeRate() * (oldOffer.getTraderTrustScore() / 100))
+						sortedUtilsByBuyer.remove(trader)
+						numBargainRounds++
+						info("lower tolerance: " + numBargainRounds++)
+						in(200) [
+							evaluateCounterOffer(oldOffer)
+						]
+					} else {
+						var highestPersonalUtil : LinkedHashMap<String, Object> = me.getUtilByActorIdAndUtilId(trader,
+							sortedUtilsByBuyer.get(trader).lastKey())
+						var tradeItems : List<String> = highestPersonalUtil.get("tradeItems") as ArrayList
+						var offerItems : List<String> = highestPersonalUtil.get("offerItems") as ArrayList
+						var myOffer : Offer = buildNewOffer(oldOffer, tradeItems, offerItems, 0.0)
+						^space.emit(new MakeOffer(myOffer))
+					}
+
+				}
+			}
+
+		}
+	}
+}

@@ -1,0 +1,58 @@
+import io.sarl.core.ExternalContextAccess
+import io.sarl.core.Logging
+import io.sarl.core.OpenEventSpace
+import java.util.LinkedHashMap
+import java.util.List
+import java.util.UUID
+
+agent BaseActor {
+	uses Logging, ExternalContextAccess
+
+	protected var ^space : OpenEventSpace
+	protected var playersList : LinkedHashMap<UUID, String>
+	protected var me : ActorPersonality
+	protected var tradingId : UUID
+	protected var lockObj = new Object()
+	protected var toleranceToReachMaxGenUtil : Double
+	protected var toleranceToReachMaxOwnUtil : Double
+
+	on Punish [occurrence.id == this.tradingId] {
+		var trust : Double = me.getTrustScore()
+		if (trust <= 0.0) {
+			me.setTrustScore(0.0)
+		}
+		me.setTrustScore(trust - 10.0)
+		info("New TrustScore: " + me.getTrustScore)
+	}
+
+	def buildNewOffer(offer : Offer, traderItems : List<String>, buyersItems : List<String>, amount : Double) : Offer {
+		offer.setTraderItems(traderItems)
+		offer.setOfferItems(buyersItems)
+		return offer
+	}
+
+	def buildOffer(trader : UUID, myItems : List<String>, buyer : UUID, buyersItems : List<String>, amount : Double,
+		traderName : String, buyerName : String) : Offer {
+		var id = UUID::randomUUID
+		var newOffer : Offer = new Offer(id, trader, buyer, buyersItems, myItems, amount, traderName, buyerName)
+		return newOffer
+	}
+
+	/*
+	 * Lowering Tolerance after one Bargaining round was unsuccessful
+	 */
+	def lowerTolerances(value : Double) : void {
+		synchronized (lockObj) {
+			info("First 1: " + toleranceToReachMaxGenUtil + " 2: " + toleranceToReachMaxOwnUtil)
+			toleranceToReachMaxGenUtil = toleranceToReachMaxGenUtil - (value * 1.3)
+			toleranceToReachMaxOwnUtil = toleranceToReachMaxOwnUtil - value
+			info("Last 1: " + toleranceToReachMaxGenUtil + " 2: " + toleranceToReachMaxOwnUtil)
+		}
+	}
+	
+	def resetTolerances() {
+		toleranceToReachMaxGenUtil = me.getBaseTolerance()
+		toleranceToReachMaxOwnUtil = me.getBaseTolerance()
+	}
+
+}

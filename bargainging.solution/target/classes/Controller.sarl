@@ -1,0 +1,217 @@
+import io.sarl.core.Behaviors
+import io.sarl.core.DefaultContextInteractions
+import io.sarl.core.ExternalContextAccess
+import io.sarl.core.Initialize
+import io.sarl.core.Lifecycle
+import io.sarl.core.Logging
+import io.sarl.core.OpenEventSpace
+import io.sarl.core.Schedules
+import java.util.LinkedHashMap
+import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
+
+agent Controller {
+	uses Lifecycle, Schedules, DefaultContextInteractions, Behaviors, Logging,  ExternalContextAccess
+
+	var tradersList : LinkedHashMap<UUID, String>
+	var buyersList : LinkedHashMap<UUID, String>
+	val count = new AtomicInteger
+	var name : String
+	protected var ^space : OpenEventSpace
+	var gameResults : LinkedHashMap<Integer, LinkedHashMap<String, Object>> = newLinkedHashMap()
+	var traderAcceptResult : LinkedHashMap<String, Object> = null
+	var buyerAcceptResult : LinkedHashMap<String, Object> = null
+	var accepted : boolean = false
+	var rejectOffer : Offer
+	var actors : LinkedHashMap<UUID, ActorPersonality>
+
+	on Initialize {
+		in(1000) [
+			synchronized (this) {
+				loggingName = occurrence.parameters.get(1) as String
+				^space = defaultContext.getSpace(occurrence.parameters.get(0) as UUID)
+				^space.register(asEventListener())
+				info("The Actor " + occurrence.parameters.get(1) + " was started.")
+				this.name = occurrence.parameters.get(1) as String
+			}
+		]
+	}
+
+	on StartGame [occurrence.name == this.name] {
+		this.tradersList = occurrence.tradersList
+		this.buyersList = occurrence.buyersList
+		if (this.actors === null) {
+			this.actors = occurrence.actors
+		}
+		info("start new Game")
+		^space.emit(new Count)
+	}
+
+	on Play {
+
+		if (accepted) {
+			if (traderAcceptResult === null) {
+				var offer = buyerAcceptResult.get("offer") as Offer
+				if (occurrence.offer.getClientId() !== offer.getClientId()) {
+					error("Results: " + offer.getClientName() + " and " + occurrence.offer.getClientName())
+				}
+			} else if (buyerAcceptResult === null) {
+				var offer = traderAcceptResult.get("offer") as Offer
+				if (occurrence.offer.getTraderId() !== offer.getTraderId()) {
+					error("Results: " + offer.getTraderId() + " and " + occurrence.offer.getClientName())
+				}
+			}
+		}
+		if (occurrence.role.equals("Trader")) {
+			traderAcceptResult = newLinkedHashMap("offer" -> occurrence.offer, "actor" -> occurrence.actor,
+				"strat" -> occurrence.strat)
+		} else if (occurrence.role.equals("Buyer")) {
+			buyerAcceptResult = newLinkedHashMap("offer" -> occurrence.offer, "actor" -> occurrence.actor,
+				"strat" -> occurrence.strat)
+		}
+		if (traderAcceptResult !== null && buyerAcceptResult !== null) {
+			calcResults()
+		}
+	}
+
+	on Die {
+		info("Dying")
+		killMe
+	}
+
+	on Count [isFromMe] {
+		synchronized (this) {
+			for (trader : tradersList.keySet()) {
+				info("Trader: " + trader)
+				^space.emit(new Inquiry(trader, buyersList))
+			}
+		}
+
+	}
+
+	on Clean {
+		traderAcceptResult = null
+		buyerAcceptResult = null
+		accepted = false
+		rejectOffer = null
+		gameResults = newLinkedHashMap
+	}
+
+	on AcceptOffer {
+		var offer = occurrence.offer
+		^space.emit(new InitPlay(offer))
+	}
+
+	on Reject {
+		synchronized (this) {
+			rejectOffer = occurrence.offer
+			gameResults.put(1,
+				newLinkedHashMap("traderId" -> rejectOffer.getTraderId(), "traderName" -> rejectOffer.getTraderName(),
+			"utilTrader" -> 0.0, "buyerId" -> rejectOffer.getClientId(),
+			"buyerName" -> rejectOffer.getClientName, "buyerUtil" -> 0.0,
+								"offer" -> rejectOffer, "itemsTrader" -> newArrayList,
+			"itemsBuyer" -> newArrayList, "TraderActor" -> actors.get(rejectOffer.getTraderId()),
+			"BuyerActor" -> actors.get(rejectOffer.getClientId())))
+			in(300) [
+				emit(new TurnEnd(gameResults))
+			]
+			in(300) [
+				^space.emit(new Clean)
+			]		
+		}
+	
+	}
+
+	/******************************
+	 * Calculate Results from IDP 
+	 ****************************/
+	def calcResults() {
+		synchronized (this) {
+			in(500) [
+				try {
+					var trader = traderAcceptResult.get("actor") as ActorPersonality
+					var buyer = buyerAcceptResult.get("actor") as ActorPersonality
+
+					/*************************************************************************************** 
+					 * Notification about the opponent actor behavior
+					 * *************************************************************************************
+					 */
+					^space.emit(
+						new Notify(
+							newLinkedHashMap("Trader" -> newLinkedHashMap("id" -> trader.getTradingId(),
+								"result" -> traderAcceptResult.get("strat")), "Buyer" ->
+								newLinkedHashMap("id" -> buyer.getTradingId(),
+									"result" -> buyerAcceptResult.get("strat")))))
+
+					/*************************************************************************************** 
+					 * Calculation of possible IDP outcomes
+					 * *************************************************************************************
+					 */
+					if (traderAcceptResult.get("strat") == true && buyerAcceptResult.get("strat") == true) {
+						var offer = traderAcceptResult.get("offer") as Offer
+						var utils = Utils.calcUtilForOffer(offer)
+						gameResults.put(1,
+							newLinkedHashMap("traderId" -> offer.getTraderId(), "traderName" -> offer.getTraderName(),
+								"utilTrader" -> utils.get("utilTrader"), "buyerId" -> offer.getClientId(),
+								"buyerName" -> offer.getClientName, "buyerUtil" -> utils.get("utilBuyer"),
+								"offer" -> offer, "itemsTrader" -> offer.getOfferItems(),
+								"itemsBuyer" -> offer.getTraderItems(), "TraderActor" -> trader, "BuyerActor" -> buyer))
+					} else if (traderAcceptResult.get("strat") == true && buyerAcceptResult.get("strat") == false) {
+						var offer = traderAcceptResult.get("offer") as Offer
+						var utils = Utils.calcUtilForOffer(offer)
+
+						/*************************************************************************************** 
+						 * Punish defecting Player
+						 * *************************************************************************************
+						 */
+						^space.emit(new Punish(buyer.getTradingId()))
+
+						/*************************************************************************************** 
+						 * Notify Spectator about the results 
+						 * *************************************************************************************
+						 */
+						gameResults.put(1,
+							newLinkedHashMap("traderId" -> offer.getTraderId(), "traderName" -> offer.getTraderName(),
+								"utilTrader" -> 0.0, "buyerId" -> offer.getClientId(),
+								"buyerName" -> offer.getClientName,
+								"buyerUtil" -> utils.get("utilTrader") + utils.get("utilBuyer"), "offer" -> offer,
+								"itemsTrader" -> newArrayList, "itemsBuyer" -> offer.getTraderItems,
+								"TraderActor" -> trader, "BuyerActor" -> buyer))
+					} else if (traderAcceptResult.get("strat") == false && buyerAcceptResult.get("strat") == true) {
+						var offer = traderAcceptResult.get("offer") as Offer
+						var utils = Utils.calcUtilForOffer(offer)
+						^space.emit(new Punish(trader.getTradingId()))
+						gameResults.put(1,
+							newLinkedHashMap("traderId" -> offer.getTraderId(), "traderName" -> offer.getTraderName(),
+								"utilTrader" -> utils.get("utilTrader") + utils.get("utilBuyer"),
+								"buyerId" -> offer.getClientId(), "buyerName" -> offer.getClientName,
+								"buyerUtil" -> 0.0, "offer" -> offer, "itemsTrader" -> offer.getOfferItems(),
+								"itemsBuyer" -> newArrayList, "TraderActor" -> trader, "BuyerActor" -> buyer))
+					} else if (traderAcceptResult.get("strat") == false && buyerAcceptResult.get("strat") == false) {
+						var offer = traderAcceptResult.get("offer") as Offer
+						var utils = Utils.calcUtilForOffer(offer)
+						gameResults.put(1,
+							newLinkedHashMap("traderId" -> offer.getTraderId(), "traderName" -> offer.getTraderName(),
+								"utilTrader" -> 0.0, "buyerId" -> offer.getClientId(),
+								"buyerName" -> offer.getClientName, "buyerUtil" -> 0.0, "offer" -> offer,
+								"itemsTrader" -> newArrayList, "itemsBuyer" -> newArrayList, "TraderActor" -> trader,
+								"BuyerActor" -> buyer))
+					} else {
+						var offer = traderAcceptResult.get("offer") as Offer
+						gameResults.put(count as Integer, newLinkedHashMap("Error" -> offer))
+						error("Results: " + traderAcceptResult + " and " + buyerAcceptResult)
+					}
+				} finally {
+					
+					in(100) [
+						emit(new TurnEnd(gameResults))
+					]
+					in(300) [
+						^space.emit(new Clean())
+					]
+				}
+
+			]
+		}
+	}
+}

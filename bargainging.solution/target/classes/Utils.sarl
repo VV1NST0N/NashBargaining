@@ -1,0 +1,183 @@
+import java.util.ArrayList
+import java.util.Collections
+import java.util.Comparator
+import java.util.LinkedHashMap
+import java.util.List
+import java.util.Map
+import java.util.TreeMap
+import java.util.UUID
+import org.paukov.combinatorics3.Generator
+
+class Utils {
+
+	/********************************************************************************************************************************************************************************************************************************************
+	 * 
+	 * based on the nash product list we can find fair bargain solutions:  product of utility gains -> https://www.researchgate.net/publication/237532301_From_Bilateral_Barter_to_Money_Exchange_Nash%27s_Bargaining_Problem_Reconsidered
+	 * 
+	 ******************************************************************************************************************************************************************************************************************************************/ 
+	var static nashProduct : LinkedHashMap<UUID, LinkedHashMap<UUID, ArrayList<Double>>> = newLinkedHashMap
+	var static singleUtilities : LinkedHashMap<UUID, LinkedHashMap<UUID, LinkedHashMap<UUID, LinkedHashMap<String, Object>>>> = newLinkedHashMap
+	var static itemValuesAllPlayers : LinkedHashMap<UUID, LinkedHashMap<String, Double>>
+
+	static def calcUtils(trader : UUID, traderItems : List<String>, buyer : UUID, buyerItems : List<String>) {
+
+		var itemValsTrader : LinkedHashMap<String, Double> = itemValuesAllPlayers.get(trader)
+		var itemValsBuyer : LinkedHashMap<String, Double> = itemValuesAllPlayers.get(buyer)
+		var itemsTrader = traderItems
+		var itemsBuyer = buyerItems
+		var possibleCombTrader : ArrayList<ArrayList<String>> = newArrayList()
+		var possibleCombBuyer : ArrayList<ArrayList<String>> = newArrayList()
+		for (var i = 2; i >= 1; i--) {
+			Generator.combination(itemsTrader).simple(i).stream().forEach([possibleCombTrader.add(it as ArrayList)])
+		}
+		for (var i = 2; i >= 1; i--) {
+			Generator.combination(itemsBuyer).simple(i).stream().forEach([possibleCombBuyer.add(it as ArrayList)])
+		}
+
+		for (itemTrader : possibleCombTrader) {
+			for (itemBuyer : possibleCombBuyer) {
+				calcUtiltyForCombinations(itemBuyer, itemTrader, itemValsTrader, itemValsBuyer, trader, buyer)
+			}
+		}
+		for (traders : nashProduct.keySet()) {
+			for (buyers : nashProduct.get(traders).keySet()) {
+				Collections.sort(nashProduct.get(traders).get(buyers))
+				Collections.reverse(nashProduct.get(traders).get(buyers))
+			}
+		}
+	}
+
+	static def calcUtilForOffer(offer : Offer) {
+		var itemValsBuyer : LinkedHashMap<String, Double> = itemValuesAllPlayers.get(offer.getClientId())
+		var itemValsTrader : LinkedHashMap<String, Double> = itemValuesAllPlayers.get(offer.getTraderId())
+		var utilBuyer : Double = 0.0
+		var utilTrader : Double = 0.0
+		//println("Buyer items: " + offer.getOfferItems())
+		//println("Trader items: " + offer.getTraderItems())
+		for (item : offer.getOfferItems()) {
+			utilTrader = utilTrader + itemValsTrader.get(item)
+			utilBuyer = utilBuyer - itemValsBuyer.get(item)
+		}
+		for (item : offer.getTraderItems()) {
+			utilTrader = utilTrader - itemValsTrader.get(item)
+			utilBuyer = utilBuyer + itemValsBuyer.get(item)
+		}
+		utilTrader = utilTrader + offer.getOfferMoney()
+		// Calculate Nash Product without considering threat strategies
+		var genUtil : Double = utilTrader * utilBuyer
+		var result : LinkedHashMap<String, Double> = newLinkedHashMap()
+		result.put("utilTrader", utilTrader)
+		result.put("utilBuyer", utilBuyer)
+		result.put("genUtil", genUtil)
+		return result
+	}
+
+	private static def calcUtiltyForCombinations(buyerItems : ArrayList<String>, traderItems : ArrayList<String>,
+		itemValsTrader : LinkedHashMap<String, Double>, itemValsBuyer : LinkedHashMap<String, Double>, trader : UUID,
+		buyer : UUID) {
+		var utilBuyer : Double = 0.0
+		var utilTrader : Double = 0.0
+		for (item : buyerItems) {
+			utilTrader = utilTrader + itemValsTrader.get(item)
+			utilBuyer = utilBuyer - itemValsBuyer.get(item)
+		}
+		for (item : traderItems) {
+			utilTrader = utilTrader - itemValsTrader.get(item)
+			utilBuyer = utilBuyer + itemValsBuyer.get(item)
+		}
+		var genUtil = utilTrader * utilBuyer
+		if (nashProduct.get(trader) === null){
+			nashProduct.put(trader, newLinkedHashMap())
+		}
+		if (genUtil > 0) {			
+				if (nashProduct.get(trader).get(buyer) !== null) {
+					nashProduct.get(trader).get(buyer).add(genUtil)
+
+				} else {
+					nashProduct.get(trader).put(buyer, newArrayList(genUtil))
+				}
+		}
+		
+		if (singleUtilities.get(trader) === null) {
+			singleUtilities.put(trader, newLinkedHashMap())
+		}
+		if (singleUtilities.get(trader).get(buyer) === null) {
+			singleUtilities.get(trader).put(buyer, newLinkedHashMap())
+		}
+		if (utilTrader > 0) {
+			var id = UUID::randomUUID
+			singleUtilities.get(trader).get(buyer).put(id,
+				newLinkedHashMap("utility" -> utilTrader, "tradeItems" -> traderItems, "offerItems" -> buyerItems))
+		}		
+		if (singleUtilities.get(buyer) === null) {
+			singleUtilities.put(buyer, newLinkedHashMap())
+		}
+		if (singleUtilities.get(buyer).get(trader) === null) {
+			singleUtilities.get(buyer).put(trader, newLinkedHashMap())
+		}
+		if (utilBuyer > 0) {
+
+			var id = UUID::randomUUID
+			singleUtilities.get(buyer).get(trader).put(id,
+				newLinkedHashMap("utility" -> utilBuyer, "tradeItems" -> traderItems, "offerItems" -> buyerItems))
+		}
+	}
+
+	static def getUtilsForActor(
+		actorId : UUID) : LinkedHashMap<UUID, LinkedHashMap<UUID, LinkedHashMap<String, Object>>> {
+		return singleUtilities.get(actorId)
+	}
+
+	static def getSortedUtilsForOpponent(map : LinkedHashMap<UUID, LinkedHashMap<String, Object>>) {
+			var sortedUUIDsByValue : TreeMap<UUID, Double> = new TreeMap()
+			map.keySet().forEach([sortedUUIDsByValue.put(it, map.get(it).get("utility") as Double)])
+			return sortByValue(sortedUUIDsByValue)
+		
+	}
+
+	static def sortByValue(map : TreeMap<UUID, Double>) : TreeMap<UUID, Double> {
+		var comparator : CustomComparator = new CustomComparator(map)
+		var sortedMap : TreeMap = new TreeMap(comparator)
+		sortedMap.putAll(map)
+		return sortedMap
+
+	}
+
+	static def getMaxUtil(offer : Offer) {
+		var list = nashProduct.get(offer.getTraderId()).get(offer.getClientId())
+		if (nashProduct.get(offer.getTraderId()).get(offer.getClientId()) === null){
+			list = newArrayList(0.0)
+		}
+		return list.get(0)
+	}
+
+	static class CustomComparator<K, V extends Comparable> implements Comparator<K> {
+		var map : Map<K, V>
+
+		new(map : Map<K, V>) {
+			this.map = map
+		}
+
+		def compare(o1 : K, o2 : K) : int {
+			return map.get(o1).compareTo(map.get(o2))
+		}
+	}
+
+	static def clean() {
+		singleUtilities = newLinkedHashMap
+		nashProduct = newLinkedHashMap
+	}
+
+	static def setItemsVals(itemValues : LinkedHashMap<UUID, LinkedHashMap<String, Double>>) {
+		itemValuesAllPlayers = itemValues
+	}
+	
+	static def printUtils(){
+		for (actor : singleUtilities.keySet()) {
+			var utils = singleUtilities.get(actor)
+			println("Actor:"+ actor)
+			utils.keySet().forEach([println(utils.get(it))])
+		}
+	}
+
+}

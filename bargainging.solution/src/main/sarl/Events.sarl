@@ -1,0 +1,420 @@
+import java.util.ArrayList
+import java.util.LinkedHashMap
+import java.util.List
+import java.util.Random
+import java.util.UUID
+
+event CalcResults
+
+event Count
+
+event Die
+
+event Clean
+
+event CleanBatch
+
+event TurnEnd {
+	var results : LinkedHashMap
+	new(results : LinkedHashMap) {
+		this.results = results
+	}
+}
+
+event MakeOffer {
+	var offer : Offer
+
+	new(offer : Offer) {
+		this.offer = offer
+	}
+}
+
+event AcceptOffer {
+	var offer : Offer
+
+	new(offer : Offer) {
+		this.offer = offer
+	}
+}
+
+event AcceptCounterOffer {
+
+	var offer : Offer
+
+	new(offer : Offer) {
+		this.offer = offer
+	}
+}
+
+event Reject {
+	var offer : Offer
+
+	new (offer : Offer) {
+		this.offer = offer
+	}
+}
+
+event StartGame {
+	var tradersList : LinkedHashMap<UUID, String>
+	var name : String
+	var buyersList : LinkedHashMap<UUID, String>
+	var actors : LinkedHashMap<UUID, ActorPersonality>
+
+	new(tradersList : LinkedHashMap<UUID, String>, name : String, buyersList : LinkedHashMap<UUID, String>,
+		 actors : LinkedHashMap<UUID, ActorPersonality> = newLinkedHashMap) {
+		this.name = name
+		this.tradersList = tradersList
+		this.buyersList = buyersList
+		this.actors = actors
+	}
+
+	new(tradersList : LinkedHashMap<UUID, String>, name : String, buyersList : LinkedHashMap<UUID, String>) {
+		this.name = name
+		this.tradersList = tradersList
+		this.buyersList = buyersList
+	}
+}
+
+class Offer {
+	var offerId : UUID
+	var clientId : UUID
+	var traderId : UUID
+	var clientName : String
+	var traderName : String
+	var offerItems : List<String>
+	var traderItems : List<String>
+	var offerMoney : Double
+	var numBargains : Integer
+	var numBargainRounds : Integer
+	var traderTrus : Double
+	var buyerTrus : Double
+
+	new (offerId : UUID, traderId : UUID, clientId : UUID, offerItems : List<String>, traderItems : List<String>,
+		offerMoney : Double, traderName : String, clientName : String) {
+		this.offerId = offerId
+		this.traderId = traderId
+		this.clientId = clientId
+		this.traderName = traderName
+		this.clientName = clientName
+		this.offerItems = offerItems
+		this.traderItems = traderItems
+		this.offerMoney = offerMoney
+		this.numBargains = 0
+		this.numBargainRounds = 0
+	}
+
+	def setTraderTrustScore(traderScore : Double) {
+		this.traderTrus = traderScore
+	}
+
+	def setBuyerTrustScore(buyerScore : Double) {
+		this.buyerTrus = buyerScore
+	}
+
+	protected def getBuyerTrustScore() {
+		return buyerTrus
+	}
+
+	protected def getTraderTrustScore() {
+		return traderTrus
+	}
+
+	def getClientId() {
+		return clientId
+	}
+
+	def getTraderId() {
+		return traderId
+	}
+
+	def getClientName() {
+		return clientName
+	}
+
+	def getTraderName() {
+		return traderName
+	}
+
+	def getOfferItems() {
+		return offerItems
+	}
+
+	def getTraderItems() {
+		return traderItems
+	}
+
+	def getOfferMoney() {
+		return offerMoney
+	}
+
+	def getOfferId() {
+		return offerId
+	}
+
+	def getNumBargains() {
+		return numBargains
+	}
+
+	def getNumBargainRounds() {
+		return numBargainRounds
+	}
+
+	def increaseNumBargains() {
+		numBargains++
+	}
+
+	def increaseNumBargainRounds() {
+		numBargainRounds++
+	}
+
+	def setOfferId(uuid : UUID) {
+		this.offerId = uuid
+	}
+
+	def setTraderName(name : String) {
+		this.traderName = name
+	}
+
+	def setClientName(name : String) {
+		this.clientName = name
+	}
+
+	def setTraderId(id : UUID) {
+		this.traderId = id
+	}
+
+	def setClientId(id : UUID) {
+		this.clientId = id
+	}
+
+	def setOfferItems(offerItems : List<String>) {
+		this.offerItems = offerItems
+	}
+
+	def setTraderItems(tradeItems : List<String>) {
+		this.traderItems = tradeItems
+	}
+
+	def setOfferMoney(money : Double) {
+		this.offerMoney = money
+	}
+
+	def toString() {
+		return "Trader Items: " + traderItems + "\n Buyer Items: " + offerItems
+	}
+
+}
+
+abstract class ActorPersonality {
+	var name : String
+	var tradingId : UUID
+	var trustScore : Double
+	var items : List<String>
+	var money : Double
+	var myUtils : LinkedHashMap<UUID, LinkedHashMap<UUID, LinkedHashMap<String, Object>>>
+	var baseTolerance : Double
+	var toleranceChangeRate : Double = 0.1
+	var role : String
+	protected var playersLastTurns : LinkedHashMap<UUID, Boolean> = newLinkedHashMap
+
+	new (tradingId : UUID, name : String, items : List<String>, money : Double, trustScore : Double,
+		baseTolerance : Double, role : String) {
+		this.name = name
+		this.tradingId = tradingId
+		this.trustScore = trustScore
+		this.items = items
+		this.baseTolerance = baseTolerance
+		this.role = role
+	}
+
+	def getRole() {
+		return role
+	}
+
+	def setRole(role : String) {
+		this.role = role
+	}
+
+	def getName() {
+		return name
+	}
+
+	def setName(name : String) {
+		this.name = name
+	}
+
+	def getTradingId() {
+		return tradingId
+	}
+
+	def setTradingId(tradingId : UUID) {
+		this.tradingId = tradingId
+	}
+
+	def getTrustScore() {
+		return trustScore
+	}
+
+	def setTrustScore(trustScore : Double) {
+		this.trustScore = trustScore
+	}
+
+	def getItems() {
+		return items
+	}
+
+	def setItems(items : List<String>) {
+		this.items = items
+	}
+
+	def getMoney() {
+		return money
+	}
+
+	def setMoney(money : Double) {
+		this.money = money
+	}
+
+	def getMyUtils() {
+		return myUtils
+	}
+
+	def setMyUtils(myUtils : LinkedHashMap<UUID, LinkedHashMap<UUID, LinkedHashMap<String, Object>>>) {
+		this.myUtils = myUtils
+	}
+
+	def getBaseTolerance() {
+		return baseTolerance
+	}
+
+	def setBaseTolerance(baseTolerance : Double) {
+		this.baseTolerance = baseTolerance
+	}
+
+	def getUtilByActorIdAndUtilId(buyer : UUID, utilId : UUID) : LinkedHashMap<String, Object> {
+		return myUtils.get(buyer).get(utilId)
+	}
+
+	def getUtilsByBuyer(buyer : UUID) {
+		return myUtils.get(buyer)
+	}
+
+	def getActor() {
+		return this
+	}
+
+	def setPlayerBeavhiour(tradingId : UUID, strat : boolean) {
+		playersLastTurns.put(tradingId, strat)
+	}
+	def setToleranceChangeRate(rate: Double){
+		this.toleranceChangeRate = rate
+	}
+	
+	def getToleranceChangeRate(){
+		return toleranceChangeRate
+	}
+
+	abstract def playStrat(tradingId : UUID) : boolean
+
+}
+
+class CoopActor extends ActorPersonality {
+	def playStrat(tradingId : UUID) : boolean {
+		return true
+	}
+}
+
+class DeflectingActor extends ActorPersonality {
+	def playStrat(tradingId : UUID) : boolean {
+		return false
+	}
+}
+
+class TitForTatActor extends ActorPersonality {
+	def playStrat(tradingId : UUID) : boolean {
+		if (playersLastTurns.get(tradingId) == true || playersLastTurns.get(tradingId) === null) {
+			return true
+		} else {
+			return false
+		}
+	}
+}
+
+class RandomActor extends ActorPersonality {
+	val random = new Random
+
+	def playStrat(tradingId : UUID) : boolean {
+		return random.nextBoolean()
+	}
+
+}
+
+event Notify {
+	var resultMap : LinkedHashMap<String, LinkedHashMap<String, Object>>
+
+	new(resultMap : LinkedHashMap<String, LinkedHashMap<String, Object>>) {
+		this.resultMap = resultMap
+	}
+}
+
+event TransportGoods {
+	var resultMap : LinkedHashMap<String, Object>
+
+	new(resultMap : LinkedHashMap<String, Object>) {
+		this.resultMap = resultMap
+	}
+}
+
+
+event Inquiry {
+	var id : UUID
+	var buyersList : LinkedHashMap<UUID, String>
+
+	new (id : UUID, buyersList : LinkedHashMap<UUID, String>) {
+		this.id = id
+		this.buyersList = buyersList
+	}
+}
+
+event Play {
+	var strat : boolean
+	var actor : ActorPersonality
+	var offer : Offer
+	var role : String
+
+	new (offer : Offer, actor : ActorPersonality, strat : boolean, role : String) {
+		this.strat = strat
+		this.actor = actor
+		this.offer = offer
+		this.role = role
+	}
+}
+
+event InitPlay {
+	var offer : Offer
+
+	new (offer : Offer) {
+		this.offer = offer
+	}
+}
+
+event EndGame
+
+event Punish {
+	var id : UUID
+
+	new(id : UUID) {
+		this.id = id
+	}
+}
+
+event Acception {
+	var offer : ArrayList<LinkedHashMap<String, Object>>
+	var name : String
+	var result : boolean
+
+	new(name : String, offer : ArrayList<LinkedHashMap<String, Object>>) {
+		this.name = name
+		this.offer = offer
+	}
+}
